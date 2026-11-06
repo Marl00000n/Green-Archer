@@ -148,6 +148,57 @@ def custom(fn, bmin, bmax):
     return fn, np.asarray(bmin, float), np.asarray(bmax, float)
 
 
+def tube(path, r, r_end=None):
+    """Rohr entlang eines Polygonzugs (N,3). r darf Skalar oder Array der Laenge N sein."""
+    P = np.asarray(path, float)
+    A, B = P[:-1], P[1:]
+    AB = B - A
+    L2 = np.maximum(np.sum(AB * AB, 1), 1e-12)
+    r = np.broadcast_to(np.asarray(r, float), (len(P),)).astype(float)
+    if r_end is not None:
+        r = np.linspace(float(r[0]), float(r_end), len(P))
+    ra, rb = r[:-1], r[1:]
+
+    def fn(X, Y, Z):
+        shp = np.broadcast(X, Y, Z).shape
+        Xb = np.broadcast_to(X, shp)[..., None]
+        Yb = np.broadcast_to(Y, shp)[..., None]
+        Zb = np.broadcast_to(Z, shp)[..., None]
+        px, py, pz = Xb - A[:, 0], Yb - A[:, 1], Zb - A[:, 2]
+        t = np.clip((px * AB[:, 0] + py * AB[:, 1] + pz * AB[:, 2]) / L2, 0, 1)
+        cx = px - t * AB[:, 0]
+        cy = py - t * AB[:, 1]
+        cz = pz - t * AB[:, 2]
+        d = np.sqrt(cx * cx + cy * cy + cz * cz) - (ra + (rb - ra) * t)
+        return d.min(-1).astype(F32)
+    m = float(r.max()) + 0.5
+    return fn, P.min(0) - m, P.max(0) + m
+
+
+def mask_of(shapes, soft=1.2, invert=False):
+    """Weiche 0..1-Maske aus SDF-Formen (Vereinigung)."""
+    fns = [s[0] for s in shapes]
+
+    def m(X, Y, Z):
+        d = None
+        for fn in fns:
+            v = fn(X, Y, Z)
+            d = v if d is None else np.minimum(d, v)
+        w = np.clip(0.5 - d / soft, 0, 1)
+        return 1 - w if invert else w
+    return m
+
+
+def mask_mul(*masks):
+    def m(X, Y, Z):
+        out = None
+        for f in masks:
+            v = f(X, Y, Z)
+            out = v if out is None else out * v
+        return out
+    return m
+
+
 # ------------------------------------------------------------------- Feld
 class Field:
     def __init__(self, lo, hi, h):
@@ -201,6 +252,90 @@ class Field:
         pts = np.atleast_2d(pts)
         idx = ((pts - self.lo) / self.h).T
         return map_coordinates(self.f, idx, order=1, mode='nearest')
+
+    def surface_pts(self, origins, dirs, t0, t1, step=0.12):
+        """Erster Oberflaechentreffer entlang Strahlen. -> (Punkte, Treffer-Maske, Normalen)"""
+        origins = np.atleast_2d(np.asarray(origins, float))
+        dirs = np.atleast_2d(np.asarray(dirs, float))
+        dirs = dirs / np.linalg.norm(dirs, axis=1, keepdims=True)
+        ts = np.arange(t0, t1, step)
+        P = origins[:, None, :] + dirs[:, None, :] * ts[None, :, None]
+        s = self.sample(P.reshape(-1, 3)).reshape(len(origins), len(ts))
+        inside = s < 0
+        first = np.argmax(inside, 1)
+        ok = inside[np.arange(len(origins)), first]
+        hit = P[np.arange(len(origins)), first]
+        # Verfeinerung per linearer Interpolation zum Nachbarn davor
+        prev = np.maximum(first - 1, 0)
+        s0 = s[np.arange(len(origins)), prev]
+        s1 = s[np.arange(len(origins)), first]
+        w = np.where(np.abs(s0 - s1) > 1e-6, s0 / (s0 - s1), 1.0)[:, None]
+        hit = P[np.arange(len(origins)), prev] + (hit - P[np.arange(len(origins)), prev]) * np.clip(w, 0, 1)
+        return hit, ok, self.normals(hit)
+
+    def normals(self, pts):
+        """Gradient des Feldes (Oberflaechennormale) an Weltpunkten."""
+        pts = np.atleast_2d(np.asarray(pts, float))
+        e = self.h
+        g = []
+        for ax in range(3):
+            d = np.zeros(3); d[ax] = e
+            g.append(self.sample(pts + d) - self.sample(pts - d))
+        g = np.stack(g, 1)
+        nn = np.linalg.norm(g, axis=1, keepdims=True)
+        return g / np.maximum(nn, 1e-9)
+
+    def displace(self, amp, lam, mask=None, band=2.0, seed=0, octaves=3, gain=0.5,
+                 ridged=False, slab=40):
+        """Feine Oberflaechenstruktur: fraktales Rauschen, nur in einem Band um die Oberflaeche.
+
+        amp  Amplitude (mm), lam  groesste Wellenlaenge (mm)
+        mask Funktion (X,Y,Z)->Gewicht 0..1 (None = ueberall)
+        """
+        from scipy.ndimage import map_coordinates, gaussian_filter
+        rng = np.random.default_rng(seed)
+        NC = 48
+        grids = []
+        for o in range(octaves):
+            g = rng.random((NC, NC, NC)).astype(F32) * 2 - 1
+            g = gaussian_filter(g, 0.85, mode='wrap')
+            g /= max(np.abs(g).max(), 1e-6)
+            grids.append(g)
+        xs, ys, zs = self.axes()
+        for k0 in range(0, self.n[2], slab):
+            k1 = min(k0 + slab, self.n[2])
+            blk = self.f[:, :, k0:k1]
+            w = np.clip(1.0 - np.abs(blk) / band, 0, 1)
+            w = w * w * (3 - 2 * w)
+            sel = np.nonzero(w > 1e-3)
+            if len(sel[0]) == 0:
+                continue
+            px = xs[sel[0]].astype(F32)
+            py = ys[sel[1]].astype(F32)
+            pz = zs[k0 + sel[2]].astype(F32)
+            wt = w[sel]
+            if mask is not None:
+                mv = mask(px, py, pz)
+                keep = mv > 1e-3
+                if not np.any(keep):
+                    continue
+                sel = tuple(s[keep] for s in sel)
+                px, py, pz, wt = px[keep], py[keep], pz[keep], wt[keep]
+                wt = wt * mv[keep]
+            tot = np.zeros(len(px), F32)
+            A, L = 1.0, float(lam)
+            nrm = 0.0
+            for g in grids:
+                c = np.stack([(px / L) % NC, (py / L) % NC, (pz / L) % NC])
+                v = map_coordinates(g, c, order=1, mode='grid-wrap').astype(F32)
+                if ridged:
+                    v = 1.0 - 2.0 * np.abs(v)
+                tot += A * v
+                nrm += A
+                A *= gain
+                L *= 0.48
+            tot = tot / nrm * (amp * wt)
+            self.f[:, :, k0:k1][sel] = (blk[sel] + tot).astype(F32)
 
     def surface_y(self, x, z, y0, y1, step=0.1):
         """Erste Oberflaeche beim Entlangmarschieren von y0 nach y1."""

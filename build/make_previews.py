@@ -45,12 +45,12 @@ for key, name in (('front', 'Vorderansicht'), ('right', 'Rechte Seitenansicht'),
     print('Ansicht', name, flush=True)
 
 details = [
-    ('Detail: Maske / Kopf', 'q34', (-38, 34, -30, 22, 226, 292), 8),
-    ('Detail: Rechte Hand (Zug)', 'q34', (-50, -2, -34, 12, 228, 262), 14),
-    ('Detail: Linke Hand (Halt)', 'q34', (100, 138, -30, 12, 222, 258), 14),
-    ('Detail: Oberkörper / Kleidung', 'q34', (-36, 36, -30, 24, 140, 226), 7),
-    ('Detail: Köcher', 'back', (-52, 2, 0, 40, 100, 232), 8),
-    ('Detail: Stiefel / Sockel', 'q34', (20, 78, -36, 30, -31, 68), 8),
+    ('Detail: Maske / Kopf', 'q34', (-28, 36, -34, 24, 228, 284), 10),
+    ('Detail: Zughand am Anker', 'front', (-34, 6, -32, 4, 230, 262), 15),
+    ('Detail: Bogenhand', 'q34', (102, 134, -32, 2, 222, 258), 16),
+    ('Detail: Wams und Guertel', 'q34', (-34, 36, -32, 24, 138, 226), 7.5),
+    ('Detail: Koecher', 'back', (-56, 6, -6, 44, 96, 212), 8),
+    ('Detail: Stiefel', 'right', (20, 84, -44, 30, -32, 66), 9),
 ]
 cells2 = []
 for name, v, c, s in details:
@@ -61,7 +61,7 @@ for name, v, c, s in details:
 pf_parts = []
 d = {n: L(f'{DRK}/GreenArcher_{n}.stl') for n in ('01_Figur', '02_Sockel', '03_Bogen_oben', '04_Bogen_unten', '05_Pfeil')}
 cells3 = [
-    (render([(d['01_Figur'], STONE)], VIEWS['q34'], s=1.6), 'Figur'),
+    (render([(d['01_Figur'], STONE)], VIEWS['q34'], s=1.9), 'Figur'),
     (render([(d['03_Bogen_oben'], WOOD), (trimesh.Trimesh(d['04_Bogen_unten'].vertices + [d['03_Bogen_oben'].extents[0] + 12, 0, 0], d['04_Bogen_unten'].faces), WOOD)], VIEWS['top'], s=1.6), 'Bogenhälften (flach, wie gedruckt)'),
     (render([(d['05_Pfeil'], WOOD)], VIEWS['top'], s=2.2), 'Pfeil'),
     (render([(d['02_Sockel'], BASE)], VIEWS['q34'], s=3.0), 'Sockel'),
@@ -79,7 +79,7 @@ title_h = 90
 sheet = Image.new('RGB', (W, title_h + r1.height + r2.height + r3.height), BG)
 dr = ImageDraw.Draw(sheet)
 dr.text((30, 18), 'THE GREEN ARCHER (Columbia-Serial, 1940) – 3D-Druck-Modell', fill=(240, 240, 240), font=ImageFont.truetype(FONTB, 40))
-dr.text((30, 62), 'Figur ca. 28 cm (ohne Sockel) · mehrteilig: Figur, Sockel, 2 Bogenhälften, Pfeil · Vorschau-Renderings der STL-Dateien', fill=(180, 180, 185), font=ImageFont.truetype(FONT, 20))
+dr.text((30, 62), 'Figur ca. 28 cm · mehrteilig: Figur, Sockel, 2 Bogenhälften, Pfeil · alle Teile geschlossen, Passungen geprüft · Renderings der STL-Dateien', fill=(180, 180, 185), font=ImageFont.truetype(FONT, 20))
 y = title_h
 for r in (r1, r2, r3):
     sheet.paste(r, (0, y)); y += r.height

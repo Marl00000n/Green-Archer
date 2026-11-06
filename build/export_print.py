@@ -8,7 +8,21 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'stl')
 SRC = os.path.join(ROOT, 'zusammengebaut')
 DST = os.path.join(ROOT, 'druck')
 os.makedirs(DST, exist_ok=True)
-L = lambda n: trimesh.load(os.path.join(SRC, f'{n}_assembled.stl'))
+def L(n):
+    """STL laden und als geschlossenes Volumen reparieren (float32-Rundung der STL-Datei)."""
+    m = trimesh.load(os.path.join(SRC, f'{n}_assembled.stl'))
+    for dig in (5, 4, 3):
+        if m.is_volume:
+            break
+        m.merge_vertices(digits_vertex=dig)
+        m.update_faces(m.nondegenerate_faces())
+        m.update_faces(m.unique_faces())
+        m.remove_unreferenced_vertices()
+        trimesh.repair.fill_holes(m)
+        trimesh.repair.fix_winding(m)
+        trimesh.repair.fix_normals(m)
+    print(f'  {n}: watertight={m.is_watertight} Volumen={m.volume/1000:.2f} cm3 Dreiecke={len(m.faces)}')
+    return m
 M = {n: L(n) for n in ('figur', 'sockel', 'bogen_oben', 'bogen_unten', 'pfeil')}
 
 # Sockel in der zusammengebauten Lage 0.3 mm tiefer (Fertigungstoleranz der Sohlen)
@@ -60,9 +74,19 @@ for k, m in out.items():
 
 # komplette Szene (Vorschau / Skalierung / Anprobe)
 import fast_simplification as fs
-fv, ff = fs.simplify(M['figur'].vertices.astype(np.float32), M['figur'].faces.astype(np.int32), target_reduction=0.6, agg=5)
-fig_light = trimesh.Trimesh(fv, ff, process=True)
-scene = trimesh.util.concatenate([M['sockel'], fig_light, M['bogen_oben'], M['bogen_unten'], M['pfeil']])
+
+
+def light(m, tgt):
+    if len(m.faces) <= tgt:
+        return m
+    v, f = fs.simplify(m.vertices.astype(np.float32), m.faces.astype(np.int32),
+                       target_reduction=1 - tgt / len(m.faces), agg=5)
+    return trimesh.Trimesh(v, f, process=True)
+
+
+scene = trimesh.util.concatenate([M['sockel'], light(M['figur'], 260000),
+                                  light(M['bogen_oben'], 40000), light(M['bogen_unten'], 40000),
+                                  light(M['pfeil'], 25000)])
 scene.export(os.path.join(ROOT, 'GreenArcher_komplett_zusammengebaut.stl'))
 b = scene.bounds
 print('Komplett zusammengebaut: %.0f x %.0f x %.0f mm' % tuple(b[1] - b[0]))
