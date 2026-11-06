@@ -11,7 +11,7 @@ Druckfertig ausgerichtet in `stl/druck/`:
 
 | Datei | Inhalt | Maße (mm) | Dreiecke | Volumen |
 |---|---|---|---|---|
-| `GreenArcher_01_Figur.stl` | Figur mit Kappe, Feder, Gesichtstuch, Wams, Köcher, Händen, Stiefeln | 194 × 58 × 282 | 1 000 000 | 379 cm³ |
+| `GreenArcher_01_Figur.stl` | Figur mit Kappe, Feder, Gesichtsmaske, Wams, Köcher, Händen, Stiefeln | 194 × 58 × 282 | 1 200 000 | 380 cm³ |
 | `GreenArcher_02_Sockel.stl` | Sockel mit Gravur „THE GREEN ARCHER · 1940“, 4 Zapfenbuchsen | 140 × 72 × 30 | 3 076 | 243 cm³ |
 | `GreenArcher_03_Bogen_oben.stl` | obere Bogenhälfte, Griffwicklung, Hornnocke, halbe Sehne | 127 × 132 × 9 | 260 010 | 2,7 cm³ |
 | `GreenArcher_04_Bogen_unten.stl` | untere Bogenhälfte, dito | 127 × 139 × 9 | 264 596 | 2,8 cm³ |
@@ -20,8 +20,9 @@ Druckfertig ausgerichtet in `stl/druck/`:
 `stl/GreenArcher_komplett_zusammengebaut.stl` zeigt alles in Endposition (nur zum Ansehen, reduzierte
 Dreieckszahl, 206 × 72 × 402 mm).
 
-Alle fünf Teile sind **wasserdicht und jeweils ein einziger geschlossener Körper**. Die Passungen sind
-rechnerisch geprüft: **0 mm³ Überschneidung** zwischen allen Teilepaaren.
+Alle fünf Teile sind **wasserdicht und jeweils ein einziger geschlossener Körper** – geprüft auf offene
+Kanten und auf Kanten mit mehr als zwei Flächen, beides jeweils null. Die Passungen sind rechnerisch
+geprüft: **0 mm³ Überschneidung** zwischen allen Teilepaaren.
 
 ## Größe
 
@@ -55,15 +56,20 @@ rechnerisch geprüft: **0 mm³ Überschneidung** zwischen allen Teilepaaren.
 * **Hände:** vier gegliederte Finger je Hand mit Knöcheln, Beugefalten und Nägeln. Die linke umfasst
   den Bogengriff, die rechte zieht die Sehne im mediterranen Griff – Zeigefinger über, Mittel- und
   Ringfinger unter dem Pfeil, Sehne in der Endgelenkfalte.
-* **Kopf:** Gesicht unter dem anliegenden Tuch – Brauenwulst, Augenöffnungen mit Augapfel und Lidern,
-  Nase mit Flügeln, Lippen, Kinn, Wangenknochen, Zugfalten zu den Ohren, Knoten mit zwei Zipfeln im Nacken.
+* **Kopf:** flach liegende, mandelförmige Augenöffnungen mit bündigem Augapfel, Ober- und Unterlid und
+  Lidfalte; darüber ein Brauenwulst. Nase mit Flügeln und Nasenlöchern. Darunter sitzt eine zweite
+  Stofflage als **Mundbedeckung**, deren umgeschlagene Kante knapp unter der Nase verläuft und mit
+  Steppnaht zu den Ohren zieht; im Tuch darunter Zugfalten, im Nacken ein Knoten mit zwei Zipfeln.
 * **Kappe:** Rollrand mit Steppnaht, drei Kappennähte, vorderer Schirm, nach hinten sackende Haube,
   Feder mit Kiel, Fahnenkerben und Wicklung.
-* **Kleidung:** Wams mit Besatzkante, Brustschnürung, Schulter- und Seitennähten, kurzen Ärmeln mit
-  Saumwulst und Falten; Rock mit elf modellierten Falten und welligem Saum; Gürtel mit Schnalle,
+* **Kleidung:** Wams mit Besatzkante, Brustschnürung über einem Schlitz, Schulter- und Seitennähten,
+  kurzen Ärmeln mit Saumwulst und acht Falten. Dazu **Spannfalten** vom Achselbereich zur Gürtelmitte
+  (vorn und hinten), Falten unter den Achseln und drei Raffungen direkt über dem Gürtel.
+  Rock mit dreizehn modellierten Falten und welligem Saum; Kragen mit zwölf Falten; Gürtel mit Schnalle,
   Löchern, hängendem Riemenende und Steppnähten.
 * **Ausrüstung:** Köcher mit sieben Pfeilen, zwei Riemen mit Schnallen, Nieten und Längsnaht;
   Schultergurt mit beidseitiger Steppnaht; Armschiene mit Nähten und Nieten; Gürtelbeutel.
+* **Beine:** Strumpfhose mit Knie-, Oberschenkel- und Wadenfalten sowie einer Falte in der Kniekehle.
 * **Stiefel:** anatomische Schuhform mit Sohle, Absatz und Sohlenprofil, Kreuzschnürung mit zwölf Ösen
   und Schleifenenden, Kappennaht, hintere Längsnaht, Umschlag.
 * **Oberfläche:** feines Stoffgewebe auf Rock, Kragen, Ärmeln und Hose, Ledernarbung auf Gürtel, Köcher,
@@ -102,7 +108,7 @@ Rille der Zugfinger, damit sie rund bleibt.
 
 ```bash
 pip install numpy scipy scikit-image trimesh manifold3d fast-simplification shapely mapbox-earcut matplotlib pillow
-python3 build/green_archer.py --h 0.25 --out stl/zusammengebaut --faces 1000000   # ca. 6 Minuten
+python3 build/green_archer.py --h 0.25 --out stl/zusammengebaut --faces 1200000   # ca. 8 Minuten
 python3 build/export_print.py        # Druckausrichtung, Kontaktschnitte, Passungsprüfung
 python3 build/make_previews.py       # Vorschaublatt
 ```

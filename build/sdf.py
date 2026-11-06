@@ -159,18 +159,25 @@ def tube(path, r, r_end=None):
         r = np.linspace(float(r[0]), float(r_end), len(P))
     ra, rb = r[:-1], r[1:]
 
+    CH = 12                                     # Segmente je Block (begrenzt den Speicher)
+
     def fn(X, Y, Z):
         shp = np.broadcast(X, Y, Z).shape
         Xb = np.broadcast_to(X, shp)[..., None]
         Yb = np.broadcast_to(Y, shp)[..., None]
         Zb = np.broadcast_to(Z, shp)[..., None]
-        px, py, pz = Xb - A[:, 0], Yb - A[:, 1], Zb - A[:, 2]
-        t = np.clip((px * AB[:, 0] + py * AB[:, 1] + pz * AB[:, 2]) / L2, 0, 1)
-        cx = px - t * AB[:, 0]
-        cy = py - t * AB[:, 1]
-        cz = pz - t * AB[:, 2]
-        d = np.sqrt(cx * cx + cy * cy + cz * cz) - (ra + (rb - ra) * t)
-        return d.min(-1).astype(F32)
+        out = None
+        for i0 in range(0, len(A), CH):
+            sl = slice(i0, i0 + CH)
+            px, py, pz = Xb - A[sl, 0], Yb - A[sl, 1], Zb - A[sl, 2]
+            t = np.clip((px * AB[sl, 0] + py * AB[sl, 1] + pz * AB[sl, 2]) / L2[sl], 0, 1)
+            px -= t * AB[sl, 0]
+            py -= t * AB[sl, 1]
+            pz -= t * AB[sl, 2]
+            d = np.sqrt(px * px + py * py + pz * pz) - (ra[sl] + (rb[sl] - ra[sl]) * t)
+            d = d.min(-1)
+            out = d if out is None else np.minimum(out, d, out=out)
+        return out.astype(F32)
     m = float(r.max()) + 0.5
     return fn, P.min(0) - m, P.max(0) + m
 
@@ -285,6 +292,19 @@ class Field:
         nn = np.linalg.norm(g, axis=1, keepdims=True)
         return g / np.maximum(nn, 1e-9)
 
+    def offset_region(self, amount, wfn, slab=16):
+        """Oberflaeche in einem Bereich exakt nach aussen versetzen (zweite Stofflage)."""
+        xs, ys, zs = self.axes()
+        X = xs.astype(F32)[:, None, None]
+        Y = ys.astype(F32)[None, :, None]
+        for k0 in range(0, self.n[2], slab):
+            k1 = min(k0 + slab, self.n[2])
+            Z = zs[k0:k1].astype(F32)[None, None, :]
+            w = wfn(X, Y, Z)
+            if np.max(w) <= 1e-4:
+                continue
+            self.f[:, :, k0:k1] -= (amount * w).astype(F32)
+
     def displace(self, amp, lam, mask=None, band=2.0, seed=0, octaves=3, gain=0.5,
                  ridged=False, slab=40):
         """Feine Oberflaechenstruktur: fraktales Rauschen, nur in einem Band um die Oberflaeche.
@@ -352,6 +372,54 @@ class Field:
         verts = verts + self.lo
         m = trimesh.Trimesh(verts, faces, process=False)
         return m
+
+
+def close_mesh(m, rounds=6):
+    """Nicht-mannigfaltige Kanten entfernen und entstehende Loecher schliessen."""
+    import networkx as nx
+    for _ in range(rounds):
+        e = np.sort(m.edges, axis=1)
+        u, c = np.unique(e, axis=0, return_counts=True)
+        if not np.any(c != 2):
+            break
+        bad = [tuple(q) for q in u[c > 2]]
+        if len(bad):
+            fe = np.sort(m.edges.reshape(-1, 3, 2), axis=2)
+            key = fe[:, :, 0].astype(np.int64) * (len(m.vertices) + 1) + fe[:, :, 1]
+            bk = np.array(sorted(q[0] * (len(m.vertices) + 1) + q[1] for q in bad), dtype=np.int64)
+            hit = np.isin(key, bk).any(1)
+            m.update_faces(~hit)
+            m.remove_unreferenced_vertices()
+            e = np.sort(m.edges, axis=1)
+            u, c = np.unique(e, axis=0, return_counts=True)
+        bnd = u[c == 1]
+        if len(bnd) == 0:
+            continue
+        g = nx.Graph()
+        g.add_edges_from([tuple(q) for q in bnd])
+        newf, newv = [], []
+        V = m.vertices
+        nv = len(V)
+        for comp in nx.connected_components(g):
+            idx = np.array(sorted(comp), dtype=np.int64)
+            if len(idx) < 3:
+                continue
+            ctr = V[idx].mean(0)                       # Kegelspitze ueber dem Loch
+            ci = nv + len(newv)
+            newv.append(ctr)
+            for (a_, b_) in g.subgraph(comp).edges():
+                newf.append([a_, b_, ci])
+        if not newf:
+            break
+        m = trimesh.Trimesh(np.vstack([V, np.array(newv)]) if newv else V,
+                            np.vstack([m.faces, np.array(newf)]), process=False)
+        m.merge_vertices(digits_vertex=5)
+        m.update_faces(m.nondegenerate_faces())
+        m.update_faces(m.unique_faces())
+        m.remove_unreferenced_vertices()
+    trimesh.repair.fix_winding(m)
+    trimesh.repair.fix_normals(m)
+    return m
 
 
 def clean_mesh(m, min_volume=2.0):

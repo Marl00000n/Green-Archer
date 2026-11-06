@@ -55,6 +55,42 @@ def hsurf(phi_deg, elev_deg, off=0.0):
     return HEAD_C + p[0] * U_H + p[1] * V_H + p[2] * W_H
 
 
+MK_W0, MK_A, MK_B = -6.70, 0.045, 0.020      # Kante der Mundbedeckung: w = W0 + A*v + B*u^2
+
+
+def mask_edge_w(u, vv):
+    return MK_W0 + MK_A * vv + MK_B * u * u
+
+
+def mask_edge(phi_deg, off=0.0):
+    """Punkt auf der Kante der Mundbedeckung (Azimut phi in Kopfkoordinaten)."""
+    r = np.array(HEAD_R) + 0.3 + off
+    lo_, hi_ = -70.0, 40.0
+    for _ in range(40):
+        el = (lo_ + hi_) / 2
+        ph, e = math.radians(phi_deg), math.radians(el)
+        d = np.array([math.sin(ph) * math.cos(e), math.cos(ph) * math.cos(e), math.sin(e)])
+        q = d / math.sqrt(float(np.sum((d / r) ** 2)))
+        if q[2] - mask_edge_w(q[0], q[1]) > 0:
+            hi_ = el
+        else:
+            lo_ = el
+    ph, e = math.radians(phi_deg), math.radians((lo_ + hi_) / 2)
+    d = np.array([math.sin(ph) * math.cos(e), math.cos(ph) * math.cos(e), math.sin(e)])
+    q = d / math.sqrt(float(np.sum((d / r) ** 2)))
+    return HEAD_C + q[0] * U_H + q[1] * V_H + q[2] * W_H
+
+
+def mask_weight(X, Y, Z):
+    """1 unterhalb der Tuchkante am Kopf, 0 darueber und ausserhalb des Kopfes."""
+    lx, ly, lz = _local(X, Y, Z, HEAD_C, R_H)
+    below = np.clip((mask_edge_w(lx, ly) - lz) / 0.45 + 0.5, 0, 1)
+    r = np.array(HEAD_R) + 4.0
+    q = np.sqrt((lx / r[0]) ** 2 + (ly / r[1]) ** 2 + (lz / r[2]) ** 2)
+    near = np.clip((1.12 - q) / 0.14, 0, 1)
+    return below * near
+
+
 def fpt(u, w, off=0.0, grow=0.3):
     """Punkt auf der Gesichtsvorderseite: u seitlich, w hoch (Kopf-Koordinaten)."""
     r = np.array(HEAD_R) + grow
@@ -218,12 +254,12 @@ def project(fld, pts, inward, reach=16.0):
     return hit[ok], nrm[ok]
 
 
-def stitches(fld, path, inward, pitch=1.7, length=0.95, r=0.30, out=0.10, sub=False):
+def stitches(fld, path, inward, pitch=1.7, length=0.95, r=0.30, out=0.10, sub=False, reach=16.0):
     """Steppnaht: kurze Striche entlang eines Pfades, auf die Oberflaeche projiziert."""
     P = resample(path, pitch * 0.5)
     if len(P) < 2:
         return
-    hit, nrm = project(fld, P, inward)
+    hit, nrm = project(fld, P, inward, reach)
     if len(hit) < 2:
         return
     H = resample(hit, pitch)
@@ -240,10 +276,10 @@ def stitches(fld, path, inward, pitch=1.7, length=0.95, r=0.30, out=0.10, sub=Fa
         (fld.sub if sub else fld.add)(sh, 0.18)
 
 
-def seam(fld, path, inward, r=0.26, out=0.0, sub=True, pitch=0.5):
+def seam(fld, path, inward, r=0.26, out=0.0, sub=True, pitch=0.5, reach=16.0):
     """Durchgehende Naht-/Kantenrille auf der Oberflaeche."""
     P = resample(path, pitch)
-    hit, nrm = project(fld, P, inward)
+    hit, nrm = project(fld, P, inward, reach)
     if len(hit) < 2:
         return
     pts = hit + nrm * out
@@ -406,9 +442,27 @@ def build_figure(h, quick=False):
         add(ellipsoid(knee + sdir(knee, ank) * 11.0 + v3(0, 4.6, 0), (6.6, 5.4, 11.0),
                       frame_from_axis(ank - knee)), 4)                                             # Wade
         add(ellipsoid(knee + v3(0, -4.4, -1.0), (6.2, 4.6, 6.0)), 3)                               # Kniescheibe
-        for dz in (-7.0, -1.5, 4.0):                                                               # Kniefalten
-            c = knee + v3(0, -5.2, dz)
-            sub(capsule(c - v3(5.4, 0, 0.8), c + v3(5.4, 0, -0.8), 0.52), 0.45)
+        def wrinkle(c, axis, rad, span=72.0, rr=0.42, lift=0.0, phase=0.0):
+            axu = unit(axis)
+            fwd = unit(v3(0, -1, 0) - axu * float(np.dot(v3(0, -1, 0), axu)))
+            sid = unit(np.cross(fwd, axu))
+            pts = [c + (fwd * math.cos(math.radians(a_ + phase))
+                        + sid * math.sin(math.radians(a_ + phase))) * rad
+                   + axu * (lift * math.sin(math.radians(a_)))
+                   for a_ in np.linspace(-span, span, 11)]
+            sub(tube(pts, rr), rr * 0.85)
+
+        for dz in (-5.0, 2.0):                                                      # Kniefalten
+            c = knee + v3(0, -5.4, dz)
+            sub(capsule(c - v3(4.8, 0, 0.7), c + v3(4.8, 0, -0.7), 0.46), 0.45)
+        for (t, rr, lf, sp, ph) in ((0.60, 0.42, 1.6, 54, -26), (0.80, 0.38, -1.3, 46, 22)):
+            wrinkle(hip + (knee - hip) * t, knee - hip, 13.6 + (11.0 - 13.6) * t + 0.1,
+                    span=sp, rr=rr, lift=lf, phase=ph * s)                          # Oberschenkel
+        for (t, rr, lf, sp, ph) in ((0.09, 0.38, 1.2, 50, 30), (0.19, 0.34, -1.0, 42, -24)):
+            wrinkle(knee + (ank - knee) * t, ank - knee, 11.0 + (7.2 - 11.0) * t + 0.1,
+                    span=sp, rr=rr, lift=lf, phase=ph * s)                          # Wade
+        wrinkle(knee + (ank - knee) * 0.14, ank - knee, 11.0 - 3.8 * 0.14 + 0.1,
+                span=40, rr=0.34, phase=180)                                        # Kniekehle
 
         # ------------------------------------------------- Stiefel
         d = FOOT_D[s]                      # Zehenrichtung
@@ -467,7 +521,13 @@ def build_figure(h, quick=False):
     aa = [23.0, 23.5, 23.0, 20.5, 22.0, 25.5, 27.5, 27.0, 23.0, 17.0]
     bb = [15.0, 15.5, 15.5, 14.2, 15.0, 16.5, 17.5, 16.5, 14.5, 12.0]
     fa, fb = PchipInterpolator(zz, aa), PchipInterpolator(zz, bb)
-    add(loft(112, 224, lambda z: fa(z), lambda z: fb(z), cy=lambda z: 1.0 + 0 * z, rnd=2.0), 4)
+    TS = fold_specs(14, 97, amp=(0.55, 1.20), width=(0.075, 0.135), drift=0.10)
+    tbase = fold_mod(112, 224, TS, lo=1.0, hi=1.0, pw=1.0, valley=0.55, vw=0.75)
+
+    def tmod(phi, z):
+        return tbase(phi, z) * np.exp(-((z - 168.0) / 30.0) ** 2)
+    add(loft(112, 224, lambda z: fa(z), lambda z: fb(z), cy=lambda z: 1.0 + 0 * z,
+             mod=tmod, amp=1.6, rnd=2.0), 4)
     for s in SIDE:                                                  # Brustmuskeln
         add(ellipsoid(v3(11.0 * s, -10.5, 194), (9.5, 5.0, 6.8)), 6)
     add(ellipsoid(v3(0, 3, 214), (17, 9, 7)), 5)                    # Trapez
@@ -483,7 +543,7 @@ def build_figure(h, quick=False):
         zc = np.clip(z, 104, 152)
         return sfa(zc), sfb(zc)
 
-    SK = fold_specs(11, 7, amp=(1.5, 2.7), width=(0.075, 0.125), drift=0.22)
+    SK = fold_specs(13, 7, amp=(1.5, 2.9), width=(0.065, 0.115), drift=0.22)
     pleat = fold_mod(104, 152, SK, lo=0.14, hi=1.0, pw=0.95)
 
     def hemz(phi):
@@ -568,35 +628,53 @@ def build_figure(h, quick=False):
         add(ellipsoid(hsurf(sg * 33, 2, -2.2), (4.6, 4.0, 3.2), R_H), 3.0)
         add(ellipsoid(hsurf(sg * 62, -12, -2.0), (3.6, 3.4, 4.6), R_H), 3.0)      # Kiefermuskel
     # Nase
-    add(capsule(fpt(0, 6.2, -1.1), fpt(0, -2.0, -0.5), 1.35, 1.95), 1.6)
-    add(ellipsoid(fpt(0, -4.4, -0.7), (2.5, 2.2, 1.9), R_H), 1.3)                 # Nasenspitze
+    add(capsule(fpt(0, 6.4, -1.5), fpt(0, -2.4, -1.1), 1.05, 1.45), 1.5)
+    add(ellipsoid(fpt(0, -4.4, -1.2), (1.80, 1.7, 1.45), R_H), 1.2)               # Nasenspitze
     for sg in (-1, 1):
-        add(ellipsoid(fpt(sg * 2.3, -4.9, -0.9), (1.5, 1.4, 1.3), R_H), 1.0)      # Nasenfluegel
-        sub(tube([fpt(sg * 1.7, -6.0, 0.15), fpt(sg * 2.9, -4.0, 0.15)], 0.30), 0.25)
+        add(ellipsoid(fpt(sg * 1.9, -4.9, -1.2), (1.10, 1.05, 1.0), R_H), 1.0)    # Nasenfluegel
+        sub(tube([fpt(sg * 1.6, -5.9, 0.10), fpt(sg * 2.7, -4.1, 0.10)], 0.26), 0.22)
+        sub(ellipsoid(fpt(sg * 1.5, -5.6, 0.0), (0.55, 0.5, 0.45), R_H), 0.2)     # Nasenloch
     # Brauenwulst und Stirn
-    add(tube([fpt(u, 5.9 - 0.022 * u * u, -0.45) for u in np.arange(-9.5, 9.6, 1.0)], 1.20), 1.1)
+    add(tube([fpt(u, 6.1 - 0.022 * u * u, -0.55) for u in np.arange(-9.5, 9.6, 1.0)], 1.30), 1.1)
     sub(tube([fpt(u, 8.4 - 0.020 * u * u, 0.28) for u in np.arange(-8.0, 8.1, 1.0)], 0.32), 0.3)
     sub(tube([fpt(0, 6.6, 0.25), fpt(0, 3.4, 0.25)], 0.30), 0.3)                  # Zornesfalte
     # Augen: Oeffnung im Tuch, Augapfel, Lider
     for sg in (-1, 1):
-        c = fpt(sg * 4.7, 2.3, 0.0)
-        nn = unit(c - (HEAD_C + W_H * (c[2] - HEAD_C[2]) * 0.0))
+        c = fpt(sg * 4.8, 2.1, 0.0)
         vo = unit(c - HEAD_C - W_H * float(np.dot(c - HEAD_C, W_H)) * 0.55)
         uo = unit(np.cross(W_H, vo))
         Re = np.array([uo, vo, W_H])
-        sub(ellipsoid(c + vo * 0.7, (2.5, 2.2, 1.55), Re), 0.40)                  # Oeffnung
-        add(ellipsoid(c - vo * 1.5, (2.3, 2.2, 2.0), Re), 0.35)                   # Augapfel
-        sub(ellipsoid(c - vo * 2.1, (0.8, 0.8, 0.8), Re), 0.18)                   # Pupille
-        add(tube([fpt(sg * (4.7 + k), 4.3 - 0.030 * k * k, -0.3)
-                  for k in np.arange(-2.6, 2.7, 0.5)], 0.60), 0.5)                # Oberlid
-        add(tube([fpt(sg * (4.7 + k), 0.5 + 0.022 * k * k, -0.3)
-                  for k in np.arange(-2.2, 2.3, 0.5)], 0.40), 0.4)                # Unterlid
-    # Mund unter dem Tuch
-    add(tube([fpt(u, -7.8 + 0.045 * u * u, -0.9) for u in np.arange(-4.2, 4.3, 0.6)], 1.25), 1.6)
-    add(tube([fpt(u, -9.8 + 0.050 * u * u, -1.0) for u in np.arange(-3.8, 3.9, 0.6)], 1.15), 1.6)
-    sub(tube([fpt(u, -8.8 + 0.050 * u * u, 0.30) for u in np.arange(-4.0, 4.1, 0.5)], 0.26), 0.35)
-    add(ellipsoid(fpt(0, -11.4, -0.9), (3.4, 2.8, 2.2), R_H), 1.8)                # Kinnpolster
-    sub(tube([fpt(0, -10.4, 0.2), fpt(0, -12.6, 0.2)], 0.26), 0.25)               # Kinngruebchen
+        # flache Mandelform: breiter Schlitz, Augapfel buendig dahinter
+        sub(ellipsoid(c + vo * 0.30, (3.05, 2.3, 1.38), Re), 0.28)                # Oeffnung
+        sub(ellipsoid(c + vo * 0.10 - W_H * 0.95, (2.3, 1.6, 0.75), Re), 0.25)    # untere Lidkante
+        add(ellipsoid(c - vo * 2.20, (2.20, 2.1, 2.00), Re), 0.30)                # Augapfel, buendig
+        sub(ellipsoid(c - vo * 2.55, (0.62, 0.62, 0.62), Re), 0.14)               # Pupille
+        add(tube([fpt(sg * (4.8 + k), 3.9 - 0.028 * k * k, -0.15)
+                  for k in np.arange(-3.0, 3.1, 0.5)], 0.62), 0.42)               # Oberlid
+        add(tube([fpt(sg * (4.8 + k), 0.2 + 0.020 * k * k, -0.45)
+                  for k in np.arange(-2.5, 2.6, 0.5)], 0.34), 0.35)               # Unterlid
+        sub(tube([fpt(sg * (4.8 + k), 4.9 - 0.028 * k * k, 0.18)
+                  for k in np.arange(-3.0, 3.1, 0.5)], 0.24), 0.25)               # Lidfalte
+    # Mundpartie: nur als weiche Form, sie liegt unter der Tuchlage
+    add(tube([fpt(u, -8.2 + 0.045 * u * u, -1.3) for u in np.arange(-4.0, 4.1, 0.6)], 1.20), 1.8)
+    add(tube([fpt(u, -10.1 + 0.050 * u * u, -1.4) for u in np.arange(-3.6, 3.7, 0.6)], 1.10), 1.8)
+    add(ellipsoid(fpt(0, -11.6, -1.3), (3.4, 2.8, 2.2), R_H), 1.8)                # Kinnpolster
+
+    # ---------------------------------------- Mundbedeckung (Tuch bis unter die Nase)
+    fig.offset_region(0.85, mask_weight)
+    MED = [mask_edge(a_, 0.95) for a_ in np.arange(-112, 113, 3.5)]
+    add(tube(MED, 0.70), 0.45)                                                    # Umschlagkante
+    sub(tube([mask_edge(a_, 1.95) for a_ in np.arange(-110, 111, 3.5)], 0.26), 0.25)
+    MST = [mask_edge(a_, 1.25) for a_ in np.arange(-108, 109, 2.0)]
+    stitches(fig, np.array(MST), np.stack([HEAD_C - q for q in MST]),
+             pitch=1.9, length=0.8, r=0.22, out=0.06)
+    for sg in (-1, 1):                                                            # Zugfalten im Tuch
+        for (p0, p1, rr) in ((16, 62, 0.30), (34, 86, 0.27)):
+            pa = mask_edge(sg * p0, 1.1)
+            pb = hsurf(sg * p1, -42, 1.2)
+            pc = hsurf(sg * (p1 + 16), -22, 1.2)
+            sub(tube(catmull([tuple(pa), tuple(pb), tuple(pc)], 8), rr), rr * 0.9)
+    sub(tube([hsurf(0, -58, 1.2), hsurf(0, -76, 1.2)], 0.24), 0.3)
     # weiche Zugfalten des Tuchs (Wange -> Ohr)
     for sg in (-1, 1):
         sub(tube([fpt(sg * 3.0, -6.2, 0.10), fpt(sg * 6.6, -8.6, 0.10),
@@ -619,7 +697,7 @@ def build_figure(h, quick=False):
         zc = np.clip(z, 212, 245)
         return cfa(zc), cfb(zc)
 
-    CW = fold_specs(10, 23, amp=(1.1, 2.0), width=(0.075, 0.13), drift=0.12)
+    CW = fold_specs(12, 23, amp=(1.0, 2.1), width=(0.062, 0.11), drift=0.12)
     cmod = fold_mod(212, 245, CW, lo=0.05, hi=1.0, pw=1.3)
 
     def cowlz(phi):
@@ -635,7 +713,7 @@ def build_figure(h, quick=False):
     log('Kopf fertig')
 
     # ------------------------------------------------- Kappe (Robin-Hood-Muetze)
-    CAP_W0, CAP_TILT = 6.4, 0.20                      # Schnitthoehe, Neigung
+    CAP_W0, CAP_TILT = 7.6, 0.17                      # Schnitthoehe, Neigung
     cr = np.array(HEAD_R) + np.array([2.4, 2.4, 1.2])
 
     def cap_fn():
@@ -791,16 +869,17 @@ def build_figure(h, quick=False):
     log('Gurt fertig')
 
     # ----------------------------------------------- Brustschnuerung am Wams
-    for i in range(6):
+    ys1 = fig.surface_y(0.0, 210, -40, 10, 0.1)
+    if ys1 is not None:                                      # erst der Schlitz ...
+        sub(capsule(v3(0, ys1 - 0.3, 211), v3(0, ys1 - 0.3, 160), 0.5), 0.2)
+    for i in range(6):                                       # ... dann die Schnuerung darueber
         zc = 205 - i * 8.2
         ysf = fig.surface_y(0.0, zc, -40, 10, 0.1)
         if ysf is None:
             continue
-        add(capsule(v3(-3.2, ysf - 0.2, zc + 1.8), v3(3.2, ysf - 0.2, zc - 1.8), 0.75), 0.3)
-        add(capsule(v3(3.2, ysf - 0.2, zc + 1.8), v3(-3.2, ysf - 0.2, zc - 1.8), 0.75), 0.3)
-    ys1 = fig.surface_y(0.0, 210, -40, 10, 0.1)
-    if ys1 is not None:
-        sub(capsule(v3(0, ys1 - 0.3, 211), v3(0, ys1 - 0.3, 160), 0.5), 0.2)
+        add(capsule(v3(-3.4, ysf - 0.15, zc + 1.9), v3(3.4, ysf - 0.35, zc - 1.9), 0.78), 0.35)
+        add(capsule(v3(3.4, ysf - 0.35, zc + 1.9), v3(-3.4, ysf - 0.15, zc - 1.9), 0.78), 0.35)
+        add(ellipsoid(v3(0, ysf - 0.25, zc), (1.0, 0.9, 1.0)), 0.5)   # Kreuzungspunkt
 
     add_details(fig)
     log('Naehte / Beschlaege fertig')
@@ -875,8 +954,8 @@ def add_details(fig):
     for sg in (-1, 1):
         P = catmull([(sg * 2.0, -17.0, 212.0), (sg * 7.5, -16.0, 203.0),
                      (sg * 6.0, -17.4, 188.0), (sg * 3.0, -18.6, 172.0), (0.0, -19.0, 162.0)], 12)
-        seam(fig, P, np.array([[0, 1.0, 0]]), r=0.40, sub=False, pitch=0.6)       # Besatzkante
-        stitches(fig, P, np.array([[0, 1.0, 0]]), pitch=2.2, length=1.0, r=0.26, out=0.42)
+        seam(fig, P, np.array([[0, 1.0, 0]]), r=0.46, sub=False, pitch=0.6)       # Besatzkante
+        stitches(fig, P, np.array([[0, 1.0, 0]]), pitch=2.2, length=1.0, r=0.24, out=0.10)
         Q = catmull([(sg * 13.0, -8.0, 216.0), (sg * 21.0, -4.0, 210.0), (sg * 25.5, 2.0, 203.0)], 10)
         seam(fig, Q, -np.stack([Q[:, 0], Q[:, 1] - 1, np.zeros(len(Q)) - 1.2], 1), r=0.34)
         Sd = catmull([(sg * 26.5, 1.0, 198.0), (sg * 25.0, 1.0, 182.0), (sg * 22.5, 1.0, 166.0),
@@ -921,6 +1000,30 @@ def add_details(fig):
         off = np.cross(tg, np.array([0, 1.0, 0])) * sg * 2.0
         P = bp + off
         stitches(fig, P, np.array([[0, 1.0, 0]]), pitch=2.0, length=0.9, r=0.26, out=0.06)
+
+    # ---- Spannfalten am Wams (vorn und hinten)
+    for sg in (-1, 1):
+        for (a0, a1, a2, rr) in (((21, 201), (14, 185), (5, 169), 0.44),
+                                 ((25, 193), (17, 177), (8, 164), 0.40),
+                                 ((13, 207), (10, 193), (5, 179), 0.34)):
+            P = catmull([(sg * a0[0], -34.0, a0[1]), (sg * a1[0], -34.0, a1[1]),
+                         (sg * a2[0], -34.0, a2[1])], 12)
+            seam(fig, P, np.array([[0, 1.0, 0]]), r=rr, reach=56.0)
+            Q = catmull([(sg * a0[0], 34.0, a0[1] - 2), (sg * a1[0], 34.0, a1[1] - 2),
+                         (sg * a2[0], 34.0, a2[1] - 2)], 12)
+            seam(fig, Q, np.array([[0, -1.0, 0]]), r=rr * 0.9, reach=56.0)
+    for z in (157.0, 160.4, 163.6):                               # Raffung ueber dem Guertel
+        for (q0, q1) in ((-math.pi, -math.pi / 3), (-math.pi / 3, math.pi / 3),
+                         (math.pi / 3, math.pi)):
+            P = ring_path(27.0, 21.0, z, n=48, cy=1.0, phi0=q0, phi1=q1)
+            seam(fig, P, IN_AX(P), r=0.32, reach=26.0)
+    for sg in (-1, 1):                                            # Falten unter den Achseln
+        for k in range(3):
+            P = catmull([(sg * (23 - 1.5 * k), -22.0, 204 - 5 * k),
+                         (sg * (27 - 1.0 * k), -4.0, 199 - 5 * k),
+                         (sg * (25 - 1.0 * k), 12.0, 196 - 5 * k)], 10)
+            seam(fig, P, -np.stack([P[:, 0], P[:, 1] - 1, np.zeros(len(P))], 1),
+                 r=0.34, reach=30.0)
 
     # ---- Muetze: Naht am Rollrand, Federkiel-Wicklung
     P = np.array([hsurf(a, 20.0, 0.6) for a in np.linspace(-180, 175, 72)])
@@ -1191,6 +1294,13 @@ def clearance_report(fig):
     return out
 
 
+def defects(m):
+    """(offene Kanten, Kanten mit mehr als zwei Flaechen)"""
+    e = np.sort(m.edges, axis=1)
+    u, c = np.unique(e, axis=0, return_counts=True)
+    return int((c == 1).sum()), int((c > 2).sum())
+
+
 def tidy(m):
     """Doppelte/entartete Dreiecke entfernen - noetig, damit die Vereinfachung dicht bleibt."""
     m.merge_vertices(digits_vertex=5)
@@ -1217,16 +1327,23 @@ def finish(f, name, outdir, target_faces=None, min_vol=1.0):
     if target_faces and len(m.faces) > target_faces:
         import fast_simplification as fs
         v, fcs = fs.simplify(m.vertices.astype(np.float32), m.faces.astype(np.int32),
-                             target_reduction=1 - target_faces / len(m.faces), agg=4)
+                             target_reduction=1 - target_faces / len(m.faces), agg=3)
         m2 = trimesh.Trimesh(v, fcs, process=True)
         tidy(m2)
-        log(name, 'vereinfacht auf', len(m2.faces), 'Dreiecke, wasserdicht:', m2.is_watertight)
-        if m2.is_watertight or not m.is_watertight:
+        b2, n2 = defects(m2)
+        log(name, 'vereinfacht auf', len(m2.faces), 'Dreiecke; offene Kanten:', b2,
+            ' Mehrfachkanten:', n2)
+        if b2 > 0:
+            m3 = close_mesh(m2.copy())
+            b3, n3 = defects(m3)
+            log(name, 'nach Reparatur: offene Kanten:', b3, ' Mehrfachkanten:', n3)
+            if b3 == 0:
+                m2, b2, n2 = m3, b3, n3
+        if b2 == 0:
             m = m2
-    if not m.is_watertight:
-        trimesh.repair.fill_holes(m)
-        trimesh.repair.fix_winding(m)
-        log(name, 'nach Reparatur wasserdicht:', m.is_watertight)
+    b, n = defects(m)
+    log(name, 'final:', len(m.faces), 'Dreiecke, offene Kanten:', b, ' Mehrfachkanten:', n,
+        ' wasserdicht:', m.is_watertight)
     return m
 
 
